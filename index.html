@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>All Hands on Deck</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="start-panel" class="panel">
+        <h1>All Hands on Deck</h1>
+        <button id="start-button">Start New Game</button>
+    </div>
+    <div id="game-panel" class="panel hidden">
+        <canvas id="game-canvas"></canvas>
+        <div id="episode-title" class="overlay overlay-title hidden"></div>
+        <div id="narration-box" class="overlay overlay-dialogue hidden">
+            <div id="narration-speaker" class="overlay-speaker"></div>
+            <div id="narration-text" class="overlay-text"></div>
+        </div>
+        <div id="speech-bubble" class="overlay overlay-speech hidden">
+            <div id="speech-speaker" class="overlay-speaker"></div>
+            <div id="speech-text" class="overlay-text"></div>
+        </div>
+        <div id="episode-summary" class="overlay overlay-summary hidden">
+            <div id="episode-summary-title" class="summary-title">Episode Complete</div>
+            <div id="episode-summary-body" class="summary-body"></div>
+            <button id="next-episode-button" class="summary-button hidden" type="button">Play Next Episode</button>
+        </div>
+    </div>
+    <script src="data.js"></script>
+    <script src="episodes.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

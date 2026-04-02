@@ -10,17 +10,24 @@ document.addEventListener('DOMContentLoaded', function() {
     const speechBubble = document.getElementById('speech-bubble');
     const speechSpeaker = document.getElementById('speech-speaker');
     const speechText = document.getElementById('speech-text');
+    const interactionPanel = document.getElementById('interaction-panel');
+    const interactionTitle = document.getElementById('interaction-title');
+    const interactionText = document.getElementById('interaction-text');
+    const interactionChoices = document.getElementById('interaction-choices');
     const episodeSummary = document.getElementById('episode-summary');
     const episodeSummaryTitle = document.getElementById('episode-summary-title');
     const episodeSummaryBody = document.getElementById('episode-summary-body');
     const nextEpisodeButton = document.getElementById('next-episode-button');
+    const skipEpisodeButton = document.getElementById('skip-episode-button');
     const ctx = canvas.getContext('2d');
 
     // --- Game assets ---
-    let deckImage = new Image();
-    let shipImage = new Image();
-    let blankOfficerImage = new Image();
-    let officerImages = [];
+	    let deckImage = new Image();
+	    let shipImage = new Image();
+	    let blankOfficerImage = new Image();
+	    let destinationImage = new Image();
+	    const effectImageCache = {};
+	    let officerImages = [];
     let officers = [];
     let slots = [];
     let sidePositions = [];
@@ -78,11 +85,21 @@ document.addEventListener('DOMContentLoaded', function() {
     const voiceClipPaths = Array.from({ length: 9 }, (_, index) => `assets/sound/voice-${index + 1}.mp3`);
     let activeVoiceAudio = null;
     let activeEpisodeAudio = null;
+    let activeUiAudio = null;
     let activeSpeechOfficer = null;
     let hoveredSideOfficerIndex = -1;
-    let currentEpisodeIndex = 0;
-    let shipOpacity = 1;
-    let targetShipOpacity = 1;
+    let hoveredEncounterSlot = null;
+	    let currentEpisodeIndex = 0;
+	    let shipOpacity = 1;
+	    let targetShipOpacity = 1;
+    let activeDestination = null;
+    let activeDestinationImagePath = '';
+    let activeTravelDurationMs = 0;
+    let travelStepStartedAt = 0;
+	    let activeEncounterStep = null;
+	    let uiTimeoutIds = [];
+	    let promotionBursts = [];
+	    let activeShipOverlay = null;
 
     let animationId = null;
     let lastFrameTime = null;
@@ -100,15 +117,29 @@ document.addEventListener('DOMContentLoaded', function() {
         startEpisode(0);
     });
 
-    nextEpisodeButton.addEventListener('click', function() {
-        const nextEpisodeIndex = currentEpisodeIndex + 1;
-        if (nextEpisodeIndex >= episodes.length) {
-            return;
-        }
+    if (nextEpisodeButton) {
+        nextEpisodeButton.addEventListener('click', function() {
+            const nextEpisodeIndex = currentEpisodeIndex + 1;
+            if (nextEpisodeIndex >= episodes.length) {
+                return;
+            }
 
-        hideEpisodeSummary();
-        startEpisode(nextEpisodeIndex);
-    });
+            hideEpisodeSummary();
+            startEpisode(nextEpisodeIndex);
+        });
+    }
+
+    if (skipEpisodeButton) {
+        skipEpisodeButton.addEventListener('click', function() {
+            const nextEpisodeIndex = currentEpisodeIndex + 1;
+            if (nextEpisodeIndex >= episodes.length) {
+                return;
+            }
+
+            resetEpisodePresentation();
+            startEpisode(nextEpisodeIndex);
+        });
+    }
 
     function resizeCanvas() {
         canvas.width = window.innerWidth;
@@ -121,25 +152,26 @@ document.addEventListener('DOMContentLoaded', function() {
         draw();
     });
 
-    function loadImages() {
-        // Load images
-        deckImage.src = 'assets/images/deck.png';
-        shipImage.src = 'assets/images/ship.png';
-        blankOfficerImage.src = 'assets/images/officer-blank.png';
-    }
+	    function loadImages() {
+	        // Load images
+	        deckImage.src = 'assets/images/deck.png';
+	        shipImage.src = 'assets/images/ship.png';
+	        blankOfficerImage.src = 'assets/images/officer-blank.png';
+	        destinationImage.src = 'assets/images/spacestation.png';
+	    }
 
-    function initializeGameState() {
-        // Starfield
-        stars = [];
-        for (let i = 0; i < layoutConfig.starCount; i++) {
-            stars.push({
-                x: Math.random() * canvas.width,
-                y: Math.random() * (canvas.height / 3),
-                speed: 0.5 + Math.random() * 1.5,
-                size: 1 + Math.random() * 1.5
-            });
-        }
-    }
+	    function initializeGameState() {
+	        // Starfield
+	        stars = [];
+	        for (let i = 0; i < layoutConfig.starCount; i++) {
+	            stars.push({
+	                x: Math.random() * canvas.width,
+	                y: Math.random() * canvas.height,
+	                speed: 0.5 + Math.random() * 1.5,
+	                size: 1 + Math.random() * 1.5
+	            });
+	        }
+	    }
 
     function updateLayout() {
         officerScale = Math.min(canvas.width / 1200, canvas.height / 800);
@@ -262,6 +294,33 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    function scheduleUiTimeout(callback, delayMs) {
+        const timeoutId = setTimeout(() => {
+            uiTimeoutIds = uiTimeoutIds.filter(id => id !== timeoutId);
+            callback();
+        }, delayMs);
+        uiTimeoutIds.push(timeoutId);
+        return timeoutId;
+    }
+
+    function clearUiTimeouts() {
+        uiTimeoutIds.forEach(timeoutId => clearTimeout(timeoutId));
+        uiTimeoutIds = [];
+    }
+
+    function updateSkipEpisodeButton() {
+        if (!skipEpisodeButton) {
+            return;
+        }
+
+        const hasNextEpisode = currentEpisodeIndex < episodes.length - 1;
+        if (hasNextEpisode) {
+            skipEpisodeButton.classList.remove('hidden');
+        } else {
+            skipEpisodeButton.classList.add('hidden');
+        }
+    }
+
     function setEpisodeMode(mode) {
         episodeMode = mode;
     }
@@ -305,6 +364,18 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    function playUiSound(path) {
+        if (activeUiAudio) {
+            activeUiAudio.pause();
+            activeUiAudio.currentTime = 0;
+        }
+
+        activeUiAudio = new Audio(path);
+        activeUiAudio.play().catch(() => {
+            activeUiAudio = null;
+        });
+    }
+
     function getOfficerForRole(role) {
         return slots.find(slot => slot.role === role && slot.occupied && slot.officer)?.officer || null;
     }
@@ -313,9 +384,53 @@ document.addEventListener('DOMContentLoaded', function() {
         return slots.length > 0 && slots.every(slot => slot.occupied && slot.officer);
     }
 
-    function clearEpisodeWaitCondition() {
-        episodeWaitCondition = null;
+	    function clearEpisodeWaitCondition() {
+	        episodeWaitCondition = null;
+	    }
+
+	    function clearActiveDestination() {
+	        activeDestination = null;
+	        activeDestinationImagePath = '';
+	        activeTravelDurationMs = 0;
+	        travelStepStartedAt = 0;
+	    }
+
+	    function clearActiveShipOverlay() {
+	        activeShipOverlay = null;
+	    }
+
+	    function resetEpisodePresentation() {
+	        clearEpisodeTimeout();
+	        clearUiTimeouts();
+	        clearEpisodeWaitCondition();
+	        clearActiveDestination();
+	        clearActiveShipOverlay();
+	        activeEncounterStep = null;
+	        promotionBursts = [];
+        hideEpisodeTitle();
+        hideNarration();
+        hideSpeechBubble();
+        hideInteractionPanel();
+        hideEpisodeSummary();
+        setEpisodeMode('free');
+        targetShipOpacity = 1;
     }
+
+	    function setActiveDestination(destination, durationMs) {
+	        if (!destination?.image) {
+	            clearActiveDestination();
+	            return;
+	        }
+
+	        const nextImagePath = `assets/images/${destination.image}`;
+	        activeDestination = destination;
+	        activeTravelDurationMs = Math.max(durationMs || 0, 1);
+	        travelStepStartedAt = performance.now();
+	        if (activeDestinationImagePath !== nextImagePath) {
+	            activeDestinationImagePath = nextImagePath;
+	            destinationImage.src = nextImagePath;
+	        }
+	    }
 
     function checkEpisodeProgress() {
         if (episodeWaitCondition === 'allStationsFilled' && areAllStationsFilled()) {
@@ -332,8 +447,23 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function showEpisodeTitle(text) {
         episodeTitle.textContent = text;
+        episodeTitle.innerHTML = '';
+        episodeTitle.textContent = text;
         episodeTitle.classList.remove('hidden');
         episodeTitle.classList.add('visible');
+    }
+
+    function showEpisodeTitleStack(episodeLabel, episodeTitleText, revealTitle = false) {
+        episodeTitle.innerHTML = `
+            <span class="title-eyebrow">${episodeLabel}</span>
+            <span class="title-name${revealTitle ? ' visible' : ''}">${episodeTitleText}</span>
+        `;
+        episodeTitle.classList.remove('hidden');
+        episodeTitle.classList.add('visible');
+    }
+
+    function getEpisodeNumberLabel(episodeIndex = currentEpisodeIndex) {
+        return `Episode ${episodeIndex + 1}`;
     }
 
     function hideNarration() {
@@ -346,6 +476,20 @@ document.addEventListener('DOMContentLoaded', function() {
         narrationText.textContent = text;
         narrationBox.classList.remove('hidden');
         narrationBox.classList.add('visible');
+    }
+
+    function hideInteractionPanel() {
+        hoveredEncounterSlot = null;
+        interactionPanel.classList.add('hidden');
+        interactionPanel.classList.remove('visible');
+        interactionChoices.innerHTML = '';
+    }
+
+    function showInteractionPanel(title, text) {
+        interactionTitle.textContent = title || 'Bridge Response Needed';
+        interactionText.textContent = text || '';
+        interactionPanel.classList.remove('hidden');
+        interactionPanel.classList.add('visible');
     }
 
     function hideSpeechBubble() {
@@ -365,18 +509,18 @@ document.addEventListener('DOMContentLoaded', function() {
         speechBubble.style.top = `${bubbleY}px`;
     }
 
-    function showSpeechBubble(officer, speakerLabel, text) {
+    function showSpeechBubble(officer, text) {
         activeSpeechOfficer = officer;
-        speechSpeaker.textContent = speakerLabel || officer.name;
+        speechSpeaker.textContent = officer.assignedRole || officer.name;
         speechText.textContent = text;
         updateSpeechBubblePosition(officer);
         speechBubble.classList.remove('hidden');
         speechBubble.classList.add('visible');
     }
 
-    function showOfficerDialogue(officer, speakerLabel, text) {
+    function showOfficerDialogue(officer, text) {
         hideNarration();
-        showSpeechBubble(officer, speakerLabel, text);
+        showSpeechBubble(officer, text);
         playOfficerVoice(officer);
     }
 
@@ -411,6 +555,169 @@ document.addEventListener('DOMContentLoaded', function() {
         const pipCount = Math.max(1, promotion.toIndex - promotion.fromIndex);
         const pips = Array.from({ length: pipCount }, (_, index) => `<span class="summary-pip" style="animation-delay:${index * 120}ms"></span>`).join('');
         return `<span class="summary-promo">${promotion.name}: ${promotion.fromRank} -> ${promotion.toRank}<span class="summary-pips">${pips}</span></span>`;
+    }
+
+    function clampShipStat(statKey) {
+        shipState[statKey] = Math.max(0, Math.min(maxShipStatValue, shipState[statKey]));
+    }
+
+    function getChevronCount(rank) {
+        const chevronCounts = [1, 1, 2, 3, 4, 4];
+        return chevronCounts[ranks.indexOf(rank)] || 1;
+    }
+
+	    function triggerPromotionBursts(officer, promotions) {
+        if (!officer || !promotions || promotions.length === 0) {
+            return;
+        }
+
+        playUiSound('assets/sound/rankup.mp3');
+        const now = performance.now();
+        promotions.forEach((promotion, index) => {
+            promotionBursts.push({
+                officer,
+                label: promotion.toRank,
+                pipCount: getChevronCount(promotion.toRank),
+                startedAt: now + index * 180,
+                durationMs: 2200
+            });
+	        });
+	    }
+
+	    function getEffectImage(imageName) {
+	        if (!imageName) {
+	            return null;
+	        }
+
+	        if (!effectImageCache[imageName]) {
+	            const img = new Image();
+	            img.src = `assets/images/${imageName}`;
+	            effectImageCache[imageName] = img;
+	        }
+
+	        return effectImageCache[imageName];
+	    }
+
+	    function triggerShipOverlay(imageName, durationMs = 2200) {
+	        const img = getEffectImage(imageName);
+	        if (!img) {
+	            return;
+	        }
+
+	        activeShipOverlay = {
+	            image: img,
+	            startedAt: performance.now(),
+	            durationMs
+	        };
+	    }
+
+    function awardActiveCrewExperience(amount, showBursts = true) {
+        if (amount <= 0) {
+            return [];
+        }
+
+        shipState.experience += amount;
+        const promotions = [];
+        const awardedCrew = new Set();
+
+        slots.forEach(slot => {
+            if (!slot.occupied || !slot.officer || awardedCrew.has(slot.officer)) {
+                return;
+            }
+
+            awardedCrew.add(slot.officer);
+            const officerPromotions = addOfficerExperience(slot.officer, amount) || [];
+            promotions.push(...officerPromotions);
+            if (showBursts) {
+                triggerPromotionBursts(slot.officer, officerPromotions);
+            }
+        });
+
+        return promotions;
+    }
+
+	    function applyEncounterEffects(effects) {
+	        if (!Array.isArray(effects)) {
+	            return;
+	        }
+
+	        effects.forEach(effect => {
+	            if (!effect?.type) {
+	                return;
+	            }
+
+	            if (effect.overlayImage) {
+	                triggerShipOverlay(effect.overlayImage, effect.overlayDurationMs || 2200);
+	            }
+
+	            if (effect.type === 'hull' || effect.type === 'power' || effect.type === 'personnel') {
+	                shipState[effect.type] += effect.amount || 0;
+	                clampShipStat(effect.type);
+	                return;
+            }
+
+            if (effect.type === 'technology' || effect.type === 'experience') {
+                if (effect.type === 'experience') {
+                    awardActiveCrewExperience(effect.amount || 0, true);
+                    return;
+                }
+
+                shipState[effect.type] += effect.amount || 0;
+            }
+        });
+    }
+
+    function getEncounterScore(officer, role, step) {
+        const baseEffectiveness = getOfficerEffectiveness(officer, role);
+        const roleLean = step?.leaning?.[role] || 0;
+        return baseEffectiveness + roleLean;
+    }
+
+    function resolveEncounterChoice(step, slot) {
+        const officer = slot.officer;
+        const responses = step.responses?.[slot.role] || {};
+        const success = getEncounterScore(officer, slot.role, step) >= (step.successTarget || 0);
+        const endSound = success ? step.soundEndSuccess : step.soundEndFailure;
+
+        activeEncounterStep = null;
+        hideInteractionPanel();
+        setEpisodeMode('scripted');
+        showOfficerDialogue(officer, responses.attempt || `${slot.role} responding.`);
+
+        clearEpisodeTimeout();
+        episodeTimeoutId = setTimeout(() => {
+            if (endSound) {
+                playEpisodeSound(`assets/sound/${endSound}`);
+            }
+            applyEncounterEffects(success ? step.outcomes?.success : step.outcomes?.failure);
+            showOfficerDialogue(
+                officer,
+                success
+                    ? (responses.success || 'Handled.')
+                    : (responses.failure || 'That could have gone better.')
+            );
+
+            clearEpisodeTimeout();
+            episodeTimeoutId = setTimeout(() => {
+                hideSpeechBubble();
+                clearActiveDestination();
+                runNextEpisodeStep();
+            }, step.aftermathDelay || 2800);
+        }, step.resultDelay || 2400);
+    }
+
+    function startEncounter(step) {
+        activeEncounterStep = step;
+        hideEpisodeTitle();
+        hideSpeechBubble();
+        hideNarration();
+        if (step.soundStart) {
+            playEpisodeSound(`assets/sound/${step.soundStart}`);
+        }
+        setActiveDestination(step.object, step.duration || 9000);
+        setEpisodeMode('interaction');
+        hoveredEncounterSlot = null;
+        hideInteractionPanel();
     }
 
     function addOfficerExperience(officer, amount) {
@@ -465,6 +772,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!rewards) {
             return {
                 technology: 0,
+                power: 0,
                 shipExperience: 0,
                 promotions: [],
                 newRosterCrew: []
@@ -472,25 +780,10 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         shipState.technology += rewards.technology || 0;
-        shipState.experience += rewards.shipExperience || 0;
-        const promotions = [];
-
-        if (rewards.crewExperience) {
-            const awardedCrew = new Set();
-            slots.forEach(slot => {
-                if (slot.occupied && slot.officer && !awardedCrew.has(slot.officer)) {
-                    awardedCrew.add(slot.officer);
-                    promotions.push(...(addOfficerExperience(slot.officer, rewards.crewExperience) || []));
-                }
-            });
-
-            officers.forEach(officer => {
-                if (officer && !awardedCrew.has(officer)) {
-                    awardedCrew.add(officer);
-                    promotions.push(...(addOfficerExperience(officer, rewards.crewExperience) || []));
-                }
-            });
-        }
+        shipState.power += rewards.power || 0;
+        clampShipStat('power');
+        const experienceAward = rewards.experience ?? rewards.shipExperience ?? 0;
+        const promotions = awardActiveCrewExperience(experienceAward, false);
 
         let newRosterCrew = [];
         if (rewards.fillRosterSlots) {
@@ -499,7 +792,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
         return {
             technology: rewards.technology || 0,
-            shipExperience: rewards.shipExperience || 0,
+            power: rewards.power || 0,
+            shipExperience: experienceAward,
             promotions,
             newRosterCrew
         };
@@ -517,13 +811,15 @@ document.addEventListener('DOMContentLoaded', function() {
         activeEpisode = null;
         episodeStepIndex = 0;
         clearEpisodeWaitCondition();
+        clearActiveDestination();
+        hideInteractionPanel();
         setEpisodeMode('outro');
         hideNarration();
         hideSpeechBubble();
         showEpisodeTitle('The End');
         targetShipOpacity = 0;
         playEpisodeSound('assets/sound/episode-end.mp3');
-        setTimeout(() => {
+        scheduleUiTimeout(() => {
             hideEpisodeTitle();
             showEpisodeSummary({
                 title: completedEpisode?.title || 'Episode Complete',
@@ -532,6 +828,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     renderSummarySection('Episode Rewards', [
                         `Experience: +${rewardSummary.shipExperience}`,
                         `Technology: +${rewardSummary.technology}`,
+                        `Power: +${rewardSummary.power}`,
                         `New roster crew: ${rewardSummary.newRosterCrew.length > 0 ? rewardSummary.newRosterCrew.join(', ') : 'None'}`
                     ]),
                     renderSummarySection('Crew Promotions', rewardSummary.promotions.map(renderPromotionEntry))
@@ -558,28 +855,36 @@ document.addEventListener('DOMContentLoaded', function() {
             setEpisodeMode('scripted');
             hideNarration();
             hideSpeechBubble();
+            hideInteractionPanel();
             hideEpisodeSummary();
             targetShipOpacity = 0;
             hideEpisodeTitle();
 
             const titleBeatMs = step.duration || cinematicTiming.introTitleBeatMs;
+            const episodeNumberLabel = getEpisodeNumberLabel(currentEpisodeIndex);
+            const episodeTitleText = step.text || activeEpisode?.title || 'Untitled Episode';
+            const subtitleRevealDelayMs = Math.round(titleBeatMs * 0.45);
             const totalIntroMs =
                 cinematicTiming.introStarfieldHoldMs +
                 titleBeatMs +
                 cinematicTiming.introPostTitleHoldMs +
                 cinematicTiming.shipFadeMs;
 
-            setTimeout(() => {
-                showEpisodeTitle(step.text);
+            scheduleUiTimeout(() => {
+                showEpisodeTitleStack(episodeNumberLabel, episodeTitleText, false);
             }, cinematicTiming.introStarfieldHoldMs);
 
-            setTimeout(() => {
-                hideEpisodeTitle();
-            }, cinematicTiming.introStarfieldHoldMs + titleBeatMs);
+            scheduleUiTimeout(() => {
+                showEpisodeTitleStack(episodeNumberLabel, episodeTitleText, true);
+            }, cinematicTiming.introStarfieldHoldMs + subtitleRevealDelayMs);
 
-            setTimeout(() => {
+            scheduleUiTimeout(() => {
                 targetShipOpacity = 1;
             }, cinematicTiming.introStarfieldHoldMs + titleBeatMs + cinematicTiming.introPostTitleHoldMs);
+
+            scheduleUiTimeout(() => {
+                hideEpisodeTitle();
+            }, cinematicTiming.introStarfieldHoldMs + titleBeatMs);
 
             scheduleNextEpisodeStep(totalIntroMs);
             return;
@@ -588,6 +893,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (step.type === 'narration') {
             hideEpisodeTitle();
             hideSpeechBubble();
+            hideInteractionPanel();
             showNarration(step.speaker || 'Narrator', step.text);
             scheduleNextEpisodeStep(step.duration);
             return;
@@ -597,9 +903,16 @@ document.addEventListener('DOMContentLoaded', function() {
             hideEpisodeTitle();
             hideNarration();
             hideSpeechBubble();
+            hideInteractionPanel();
+            setActiveDestination(step.destination, step.duration);
             targetShipOpacity = 1;
             setEpisodeMode('travel');
             scheduleNextEpisodeStep(step.duration);
+            return;
+        }
+
+        if (step.type === 'encounter') {
+            startEncounter(step);
             return;
         }
 
@@ -616,10 +929,10 @@ document.addEventListener('DOMContentLoaded', function() {
             const officer = getOfficerForRole(step.role);
             hideEpisodeTitle();
             if (officer) {
-                showOfficerDialogue(officer, step.speakerLabel, step.text);
+                showOfficerDialogue(officer, step.text);
             } else {
                 hideSpeechBubble();
-                showNarration(step.speakerLabel || 'Narrator', step.text);
+                showNarration(step.role || 'Narrator', step.text);
             }
             setEpisodeMode('scripted');
             scheduleNextEpisodeStep(step.duration);
@@ -635,9 +948,9 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
-        clearEpisodeTimeout();
-        clearEpisodeWaitCondition();
+        resetEpisodePresentation();
         currentEpisodeIndex = episodeIndex;
+        updateSkipEpisodeButton();
         activeEpisode = episode;
         episodeStepIndex = 0;
         setEpisodeMode('scripted');
@@ -891,6 +1204,37 @@ document.addEventListener('DOMContentLoaded', function() {
         ctx.restore();
     }
 
+    function wrapCenteredText(text, maxWidth, font) {
+        ctx.save();
+        ctx.font = font;
+        const words = String(text || '').split(' ');
+        const lines = [];
+        let currentLine = '';
+
+        words.forEach(word => {
+            const nextLine = currentLine ? `${currentLine} ${word}` : word;
+            if (ctx.measureText(nextLine).width <= maxWidth || !currentLine) {
+                currentLine = nextLine;
+            } else {
+                lines.push(currentLine);
+                currentLine = word;
+            }
+        });
+
+        if (currentLine) {
+            lines.push(currentLine);
+        }
+
+        ctx.restore();
+        return lines;
+    }
+
+    function drawWrappedCenteredText(lines, centerX, startY, lineHeight, font) {
+        lines.forEach((line, index) => {
+            drawTextOutlined(line, centerX, startY + index * lineHeight, font);
+        });
+    }
+
     function drawHeart(x, y, size, isFilled) {
         ctx.save();
         ctx.beginPath();
@@ -957,19 +1301,78 @@ document.addEventListener('DOMContentLoaded', function() {
         ctx.restore();
     }
 
-    function drawShip() {
-        const shipW = layoutConfig.shipWidth;
-        const shipH = layoutConfig.shipHeight;
-        const travelOffset = episodeMode === 'travel' ? Math.sin(Date.now() / 220) * 70 : 0;
-        const shipX = canvas.width / 2 - shipW / 2 + travelOffset;
-        const shipY = canvas.height / 6 - shipH / 2 + layoutConfig.shipBobAmplitude * Math.sin(Date.now() / 1000);
-        if (shipImage.complete) {
-            ctx.save();
-            ctx.globalAlpha = shipOpacity;
-            ctx.drawImage(shipImage, shipX, shipY, shipW, shipH);
-            ctx.restore();
-        }
-    }
+	    function getShipDrawRect() {
+	        const shipW = layoutConfig.shipWidth;
+	        const shipH = layoutConfig.shipHeight;
+	        const travelOffset = episodeMode === 'travel' ? Math.sin(Date.now() / 220) * 70 : 0;
+	        return {
+	            shipW,
+	            shipH,
+	            shipX: canvas.width / 2 - shipW / 2 + travelOffset,
+	            shipY: canvas.height / 6 - shipH / 2 + layoutConfig.shipBobAmplitude * Math.sin(Date.now() / 1000)
+	        };
+	    }
+
+	    function drawShip() {
+	        const { shipW, shipH, shipX, shipY } = getShipDrawRect();
+	        if (shipImage.complete) {
+	            ctx.save();
+	            ctx.globalAlpha = shipOpacity;
+	            ctx.drawImage(shipImage, shipX, shipY, shipW, shipH);
+	            ctx.restore();
+	        }
+	    }
+
+	    function drawShipOverlay() {
+	        if (!activeShipOverlay?.image) {
+	            return;
+	        }
+
+	        const now = performance.now();
+	        const elapsed = now - activeShipOverlay.startedAt;
+	        if (elapsed >= activeShipOverlay.durationMs) {
+	            activeShipOverlay = null;
+	            return;
+	        }
+
+	        const progress = elapsed / activeShipOverlay.durationMs;
+	        const alpha = progress < 0.15
+	            ? progress / 0.15
+	            : 1 - ((progress - 0.15) / 0.85);
+	        const { shipW, shipH, shipX, shipY } = getShipDrawRect();
+	        const overlayScale = 1.18;
+	        const overlayW = shipW * overlayScale;
+	        const overlayH = shipH * overlayScale;
+	        const overlayX = shipX - (overlayW - shipW) / 2;
+	        const overlayY = shipY - (overlayH - shipH) / 2;
+
+	        ctx.save();
+	        ctx.globalAlpha = Math.max(0, Math.min(alpha, 1)) * Math.max(shipOpacity, 0.6);
+	        ctx.drawImage(activeShipOverlay.image, overlayX, overlayY, overlayW, overlayH);
+	        ctx.restore();
+	    }
+
+	    function drawDestination() {
+	        if (!activeDestination || !destinationImage.complete || episodeMode === 'outro') {
+	            return;
+	        }
+
+	        const elapsedMs = Math.max(performance.now() - travelStepStartedAt, 0);
+	        const rawProgress = activeTravelDurationMs > 0 ? Math.min(elapsedMs / activeTravelDurationMs, 1) : 1;
+	        const easedProgress = 1 - Math.pow(1 - rawProgress, 3);
+	        const stationWidth = 220;
+	        const stationHeight = 220;
+	        const startX = canvas.width + stationWidth;
+	        const endX = canvas.width / 2 + layoutConfig.shipWidth * 0.72;
+	        const stationX = startX + (endX - startX) * easedProgress;
+	        const stationY = canvas.height / 6 - stationHeight / 2 - 12;
+	        const stationAlpha = Math.min(1, 0.25 + easedProgress * 0.9) * Math.max(shipOpacity, 0.35);
+
+	        ctx.save();
+	        ctx.globalAlpha = stationAlpha;
+	        ctx.drawImage(destinationImage, stationX, stationY, stationWidth, stationHeight);
+	        ctx.restore();
+	    }
 
     function drawDeckBackground() {
         const mgmtTop = canvas.height / 3;
@@ -984,8 +1387,10 @@ document.addEventListener('DOMContentLoaded', function() {
     function drawSlots() {
         slots.forEach(slot => {
             ctx.save();
-            ctx.strokeStyle = slot.occupied ? '#0f0' : '#fff';
-            ctx.lineWidth = 3;
+            const isEncounterSelectable = episodeMode === 'interaction' && activeEncounterStep && slot.occupied && slot.officer;
+            const isEncounterHovered = hoveredEncounterSlot === slot;
+            ctx.strokeStyle = isEncounterSelectable ? (isEncounterHovered ? '#ffe27a' : '#8ad7ff') : (slot.occupied ? '#0f0' : '#fff');
+            ctx.lineWidth = isEncounterSelectable ? (isEncounterHovered ? 5 : 4) : 3;
             const chairWidth = layoutConfig.chairWidth * officerScale;
             const chairHeight = getDeckOfficerHeight() / 2;
             ctx.beginPath();
@@ -999,6 +1404,69 @@ document.addEventListener('DOMContentLoaded', function() {
                 drawTextOutlined(eff.toFixed(1), getSlotCenterX(slot), slot.y + getDeckOfficerHeight() + layoutConfig.slotEffectOffsetY, 'bold 16px Arial');
             }
             ctx.textAlign = 'left';
+        });
+    }
+
+    function drawEncounterPrompt() {
+        if (episodeMode !== 'interaction' || !activeEncounterStep) {
+            return;
+        }
+
+        const panelWidth = Math.min(540, canvas.width - 40);
+        const panelHeight = 126;
+        const panelX = canvas.width / 2 - panelWidth / 2;
+        const panelY = 44;
+        const promptLines = wrapCenteredText(
+            activeEncounterStep.text || 'Choose a bridge officer to respond.',
+            panelWidth - 40,
+            'bold 15px Arial'
+        );
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(6, 14, 26, 0.88)';
+        ctx.strokeStyle = 'rgba(194, 227, 255, 0.5)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(panelX, panelY, panelWidth, panelHeight, 18);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.textAlign = 'center';
+        drawTextOutlined(activeEncounterStep.title || 'Bridge Response Needed', canvas.width / 2, panelY + 28, 'bold 18px Arial');
+        drawWrappedCenteredText(promptLines, canvas.width / 2, panelY + 54, 20, 'bold 15px Arial');
+        drawTextOutlined('Roll over a seated bridge officer and click to choose them.', canvas.width / 2, panelY + 106, 'bold 14px Arial');
+        ctx.restore();
+    }
+
+    function drawPromotionBursts() {
+        const now = performance.now();
+        promotionBursts = promotionBursts.filter(burst => now <= burst.startedAt + burst.durationMs);
+
+        promotionBursts.forEach(burst => {
+            if (now < burst.startedAt || !burst.officer) {
+                return;
+            }
+
+            const progress = Math.min((now - burst.startedAt) / burst.durationMs, 1);
+            const rise = 28 * progress;
+            const alpha = progress < 0.7 ? 1 : 1 - ((progress - 0.7) / 0.3);
+            const centerX = burst.officer.x + burst.officer.width / 2;
+            const baseY = burst.officer.y - layoutConfig.chevronOffsetY - 42 - rise;
+
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, alpha);
+            ctx.fillStyle = 'rgba(6, 14, 26, 0.9)';
+            ctx.strokeStyle = 'rgba(255, 216, 111, 0.95)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.roundRect(centerX - 82, baseY - 24, 164, 52, 16);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.textAlign = 'center';
+            drawTextOutlined(`Promoted: ${burst.label}`, centerX, baseY - 2, 'bold 15px Arial');
+            drawChevron(centerX - ((burst.pipCount - 1) * 6), baseY + 16, burst.label);
+            ctx.restore();
         });
     }
 
@@ -1046,23 +1514,28 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    function draw() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        drawStarfield();
-        const titleVisible = !episodeTitle.classList.contains('hidden');
-        const bridgeVisible = !titleVisible && shipOpacity >= 0.98;
+	    function draw() {
+	        ctx.clearRect(0, 0, canvas.width, canvas.height);
+	        drawStarfield();
+	        const titleVisible = !episodeTitle.classList.contains('hidden');
+	        const bridgeVisible = !titleVisible && shipOpacity >= 0.98;
 
-        if (shipOpacity > 0.02) {
-            drawShip();
-        }
+	        drawDestination();
 
-        if (bridgeVisible) {
-            drawHud();
-            drawDeckBackground();
-            drawSlots();
-            drawSideOfficers();
-            drawSlotOfficers();
-        }
+	        if (shipOpacity > 0.02) {
+	            drawShip();
+	            drawShipOverlay();
+	        }
+
+	        if (bridgeVisible) {
+	            drawHud();
+	            drawDeckBackground();
+	            drawSlots();
+	            drawSideOfficers();
+	            drawSlotOfficers();
+                drawPromotionBursts();
+                drawEncounterPrompt();
+	        }
 
         if (activeSpeechOfficer) {
             updateSpeechBubblePosition(activeSpeechOfficer);
@@ -1095,15 +1568,15 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Animate stars (move left)
-        for (const star of stars) {
-            star.x -= star.speed;
-            if (star.x < 0) {
-                star.x = canvas.width;
-                star.y = Math.random() * (canvas.height / 3);
-                star.speed = 0.5 + Math.random() * 1.5;
-                star.size = 1 + Math.random() * 1.5;
-            }
-        }
+	        for (const star of stars) {
+	            star.x -= star.speed;
+	            if (star.x < 0) {
+	                star.x = canvas.width;
+	                star.y = Math.random() * canvas.height;
+	                star.speed = 0.5 + Math.random() * 1.5;
+	                star.size = 1 + Math.random() * 1.5;
+	            }
+	        }
         updateShipProgression(deltaSeconds);
         draw();
         animationId = requestAnimationFrame(gameLoop);
@@ -1265,6 +1738,14 @@ document.addEventListener('DOMContentLoaded', function() {
     canvas.addEventListener('mousedown', function(e) {
         const { x, y } = getCanvasPoint(e);
 
+        if (episodeMode === 'interaction' && activeEncounterStep) {
+            const selectedSlot = slots.find(slot => slot.occupied && slot.officer && isPointInOfficer(x, y, slot.officer));
+            if (selectedSlot) {
+                resolveEncounterChoice(activeEncounterStep, selectedSlot);
+            }
+            return;
+        }
+
         officers.forEach((officer, index) => {
             if (!dragging && officer && isPointInOfficer(x, y, officer)) {
                 beginSideDrag(index, x, y);
@@ -1285,6 +1766,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
         if (!dragging) {
             hoveredSideOfficerIndex = officers.findIndex(officer => officer && isPointInOfficer(x, y, officer));
+            hoveredEncounterSlot = episodeMode === 'interaction' && activeEncounterStep
+                ? (slots.find(slot => slot.occupied && slot.officer && isPointInOfficer(x, y, slot.officer)) || null)
+                : null;
         }
 
         if (dragging) {

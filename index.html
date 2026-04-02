@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>All Hands on Deck</title>
+    <title>All hands on deck</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div id="start-panel" class="panel">
-        <h1>All Hands on Deck</h1>
-        <button id="start-button">Start New Game</button>
+        <h1>All hands on deck</h1>
+        <button id="start-button">Play episode one</button>
     </div>
     <div id="game-panel" class="panel hidden">
         <canvas id="game-canvas"></canvas>
@@ -18,6 +18,21 @@
             <div id="narration-speaker" class="overlay-speaker"></div>
             <div id="narration-text" class="overlay-text"></div>
         </div>
+        <div id="speech-bubble" class="overlay overlay-speech hidden">
+            <div id="speech-speaker" class="overlay-speaker"></div>
+            <div id="speech-text" class="overlay-text"></div>
+        </div>
+        <div id="interaction-panel" class="overlay overlay-interaction hidden">
+            <div id="interaction-title" class="interaction-title">Bridge Response Needed</div>
+            <div id="interaction-text" class="interaction-text"></div>
+            <div id="interaction-choices" class="interaction-choices"></div>
+        </div>
+        <div id="episode-summary" class="overlay overlay-summary hidden">
+            <div id="episode-summary-title" class="summary-title">Episode Complete</div>
+            <div id="episode-summary-body" class="summary-body"></div>
+            <button id="next-episode-button" class="summary-button hidden" type="button">Play Next Episode</button>
+        </div>
+        <button id="skip-episode-button" class="dev-button hidden" type="button">Skip To Next Episode</button>
     </div>
     <script src="data.js"></script>
     <script src="episodes.js"></script>

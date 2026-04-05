@@ -1,14 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>All hands on deck</title>
-    <link rel="stylesheet" href="style.css">
+	<head>
+	    <meta charset="UTF-8">
+	    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+	    <title>All hands on deck</title>
+	    <link rel="icon" href="data:,">
+	    <link rel="stylesheet" href="style.css?v=20260404b">
 </head>
 <body>
     <div id="start-panel" class="panel">
-        <h1>All hands on deck</h1>
+        <img id="start-logo" src="assets/images/logo.png" alt="All hands on deck logo">
         <button id="start-button">Play episode one</button>
     </div>
     <div id="game-panel" class="panel hidden">
@@ -17,15 +18,17 @@
         <div id="narration-box" class="overlay overlay-dialogue hidden">
             <div id="narration-speaker" class="overlay-speaker"></div>
             <div id="narration-text" class="overlay-text"></div>
+            <button id="narration-next-button" class="overlay-next-button" type="button">Next</button>
         </div>
         <div id="speech-bubble" class="overlay overlay-speech hidden">
             <div id="speech-speaker" class="overlay-speaker"></div>
             <div id="speech-text" class="overlay-text"></div>
         </div>
         <div id="interaction-panel" class="overlay overlay-interaction hidden">
-            <div id="interaction-title" class="interaction-title">Bridge Response Needed</div>
-            <div id="interaction-text" class="interaction-text"></div>
+            <div id="interaction-title" class="interaction-title overlay-speaker">Bridge Response Needed</div>
+            <div id="interaction-text" class="interaction-text overlay-text"></div>
             <div id="interaction-choices" class="interaction-choices"></div>
+            <div id="interaction-footer" class="interaction-footer"></div>
         </div>
         <div id="episode-summary" class="overlay overlay-summary hidden">
             <div id="episode-summary-title" class="summary-title">Episode Complete</div>
@@ -34,8 +37,8 @@
         </div>
         <button id="skip-episode-button" class="dev-button hidden" type="button">Skip To Next Episode</button>
     </div>
-    <script src="data.js"></script>
-    <script src="episodes.js"></script>
-    <script src="script.js"></script>
-</body>
-</html>
+	    <script src="data.js?v=20260404b"></script>
+	    <script src="episodes.js?v=20260404b"></script>
+	    <script src="script.js?v=20260404b"></script>
+	</body>
+	</html>

@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const narrationBox = document.getElementById('narration-box');
     const narrationSpeaker = document.getElementById('narration-speaker');
     const narrationText = document.getElementById('narration-text');
+    const narrationNextButton = document.getElementById('narration-next-button');
     const speechBubble = document.getElementById('speech-bubble');
     const speechSpeaker = document.getElementById('speech-speaker');
     const speechText = document.getElementById('speech-text');
@@ -14,6 +15,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const interactionTitle = document.getElementById('interaction-title');
     const interactionText = document.getElementById('interaction-text');
     const interactionChoices = document.getElementById('interaction-choices');
+    const interactionFooter = document.getElementById('interaction-footer');
     const episodeSummary = document.getElementById('episode-summary');
     const episodeSummaryTitle = document.getElementById('episode-summary-title');
     const episodeSummaryBody = document.getElementById('episode-summary-body');
@@ -58,7 +60,7 @@ document.addEventListener('DOMContentLoaded', function() {
         heartSize: 7,
         heartGap: 6,
         nameOffsetY: 25,
-        chevronOffsetY: 60,
+        chevronOffsetY: 44,
         roleLabelOffsetY: 15,
         slotLabelOffsetY: 20,
         slotEffectOffsetY: 35,
@@ -74,6 +76,15 @@ document.addEventListener('DOMContentLoaded', function() {
         shipFadeMs: 2000,
         outroSummaryDelayMs: 3400
     };
+    const chairCombatProfiles = {
+        Science: { muscle: 0.7, smartz: 1.45, style: 'Out-think them' },
+        Helm: { muscle: 1.1, smartz: 0.95, style: 'Out-fly them' },
+        Captain: { muscle: 1.0, smartz: 1.0, style: 'Out-command them' },
+        Tactical: { muscle: 1.45, smartz: 0.72, style: 'Out-punch them' },
+        Engineering: { muscle: 0.95, smartz: 1.25, style: 'Out-build them' }
+    };
+    const viewAreaHeightRatio = 0.43;
+    const managementAreaTopRatio = viewAreaHeightRatio;
     let officerScale = 1;
     let cachedShipStats = null;
     let shipStatsDirty = true;
@@ -82,7 +93,10 @@ document.addEventListener('DOMContentLoaded', function() {
     let episodeTimeoutId = null;
     let episodeMode = 'free';
     let episodeWaitCondition = null;
-    const voiceClipPaths = Array.from({ length: 9 }, (_, index) => `assets/sound/voice-${index + 1}.mp3`);
+    let isAwaitingNarrationAdvance = false;
+    const voiceClipPaths = Array.from({ length: 25 }, (_, index) => `assets/sound/voice-${index + 1}.mp3`);
+    const weaponsResponseClipPaths = Array.from({ length: 4 }, (_, index) => `assets/sound/weapons-${index + 1}.mp3`);
+    const scienceResponseClipPaths = Array.from({ length: 4 }, (_, index) => `assets/sound/science-${index + 1}.mp3`);
     let activeVoiceAudio = null;
     let activeEpisodeAudio = null;
     let activeUiAudio = null;
@@ -97,9 +111,11 @@ document.addEventListener('DOMContentLoaded', function() {
     let activeTravelDurationMs = 0;
     let travelStepStartedAt = 0;
 	    let activeEncounterStep = null;
+	    let activeCombatEncounter = null;
 	    let uiTimeoutIds = [];
 	    let promotionBursts = [];
 	    let activeShipOverlay = null;
+        let activeInteractionPanelClass = '';
 
     let animationId = null;
     let lastFrameTime = null;
@@ -141,6 +157,18 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    if (narrationNextButton) {
+        narrationNextButton.addEventListener('click', function() {
+            if (!isAwaitingNarrationAdvance || !activeEpisode) {
+                return;
+            }
+
+            clearEpisodeTimeout();
+            isAwaitingNarrationAdvance = false;
+            runNextEpisodeStep();
+        });
+    }
+
     function resizeCanvas() {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
@@ -175,10 +203,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateLayout() {
         officerScale = Math.min(canvas.width / 1200, canvas.height / 800);
-        // Side positions: two columns on each side, vertically centered in lower 2/3
+        // Side positions: two columns on each side, vertically centered in the lower management area.
         const nextSidePositions = [];
-        const mgmtTop = canvas.height / 3;
-        const mgmtHeight = canvas.height * 2 / 3;
+        const mgmtTop = canvas.height * managementAreaTopRatio;
+        const mgmtHeight = canvas.height - mgmtTop;
         const rowSpacing = layoutConfig.sideRowSpacing * officerScale;
         const columnGap = layoutConfig.sideColumnGap * officerScale;
         const marginY = Math.max(mgmtTop, mgmtTop + (mgmtHeight - rowSpacing) / 2);
@@ -192,7 +220,7 @@ document.addEventListener('DOMContentLoaded', function() {
             nextSidePositions.push({ x: rightX + columnGap, y, occupied: true });
         }
         sidePositions = nextSidePositions;
-        // Deck slots (center 50% of lower 2/3)
+        // Deck slots (center 50% of the lower management area)
         const deckX = canvas.width * 0.25;
         const deckWidth = canvas.width * 0.5;
         const officerHeight = getDeckOfficerHeight();
@@ -330,6 +358,29 @@ document.addEventListener('DOMContentLoaded', function() {
         return voiceClipPaths[voiceIndex];
     }
 
+    function getRandomClipPath(paths) {
+        if (!paths || paths.length === 0) {
+            return '';
+        }
+
+        const clipIndex = Math.floor(Math.random() * paths.length);
+        return paths[clipIndex];
+    }
+
+    function getEncounterResponseClipPath(role, options = {}) {
+        if (options.responseSound === 'weapons') {
+            return getRandomClipPath(weaponsResponseClipPaths);
+        }
+        if (options.responseSound === 'science') {
+            return getRandomClipPath(scienceResponseClipPaths);
+        }
+
+        const aggressiveRoles = new Set(['Tactical']);
+        return aggressiveRoles.has(role)
+            ? getRandomClipPath(weaponsResponseClipPaths)
+            : getRandomClipPath(scienceResponseClipPaths);
+    }
+
     function assignOfficerVoice(officer) {
         if (!officer.voice) {
             officer.voice = getRandomVoicePath();
@@ -347,6 +398,22 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         activeVoiceAudio = new Audio(officer.voice);
+        activeVoiceAudio.play().catch(() => {
+            activeVoiceAudio = null;
+        });
+    }
+
+    function playOfficerResponseSound(path) {
+        if (!path) {
+            return;
+        }
+
+        if (activeVoiceAudio) {
+            activeVoiceAudio.pause();
+            activeVoiceAudio.currentTime = 0;
+        }
+
+        activeVoiceAudio = new Audio(path);
         activeVoiceAudio.play().catch(() => {
             activeVoiceAudio = null;
         });
@@ -428,6 +495,11 @@ document.addEventListener('DOMContentLoaded', function() {
 	        travelStepStartedAt = performance.now();
 	        if (activeDestinationImagePath !== nextImagePath) {
 	            activeDestinationImagePath = nextImagePath;
+                destinationImage.onerror = function() {
+                    if (activeDestinationImagePath === nextImagePath) {
+                        clearActiveDestination();
+                    }
+                };
 	            destinationImage.src = nextImagePath;
 	        }
 	    }
@@ -467,29 +539,239 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function hideNarration() {
+        isAwaitingNarrationAdvance = false;
         narrationBox.classList.add('hidden');
         narrationBox.classList.remove('visible');
     }
 
-    function showNarration(speaker, text) {
+    function showNarration(speaker, text, options = {}) {
+        const { showNextButton = false } = options;
         narrationSpeaker.textContent = speaker;
         narrationText.textContent = text;
+        isAwaitingNarrationAdvance = showNextButton;
+        if (narrationNextButton) {
+            narrationNextButton.classList.toggle('hidden', !showNextButton);
+        }
         narrationBox.classList.remove('hidden');
         narrationBox.classList.add('visible');
     }
 
-    function hideInteractionPanel() {
-        hoveredEncounterSlot = null;
-        interactionPanel.classList.add('hidden');
-        interactionPanel.classList.remove('visible');
+	    function hideInteractionPanel() {
+	        hoveredEncounterSlot = null;
+	        activeCombatEncounter = null;
+            if (activeInteractionPanelClass) {
+                interactionPanel.classList.remove(activeInteractionPanelClass);
+                activeInteractionPanelClass = '';
+            }
+	        interactionPanel.classList.add('hidden');
+	        interactionPanel.classList.remove('visible');
+	        interactionText.innerHTML = '';
+        interactionChoices.innerHTML = '';
+        if (interactionFooter) {
+            interactionFooter.textContent = '';
+        }
+    }
+
+	    function showInteractionPanel(title, text, options = {}) {
+	        const { allowHtml = false, footer = '', className = '' } = options;
+            if (activeInteractionPanelClass) {
+                interactionPanel.classList.remove(activeInteractionPanelClass);
+                activeInteractionPanelClass = '';
+            }
+            if (className) {
+                interactionPanel.classList.add(className);
+                activeInteractionPanelClass = className;
+            }
+	        interactionTitle.textContent = title || 'Bridge Response Needed';
+	        if (allowHtml) {
+	            interactionText.innerHTML = text || '';
+        } else {
+            interactionText.textContent = text || '';
+        }
+        if (interactionFooter) {
+            interactionFooter.textContent = footer;
+        }
+        interactionPanel.classList.remove('hidden');
+        interactionPanel.classList.add('visible');
+    }
+
+    function formatCombatStatLabel(statName) {
+        return statName === 'smartz' ? 'Smartz' : 'Muscle';
+    }
+
+    function getEncounterCombatConfig(step) {
+        if (!step?.combat) {
+            return null;
+        }
+
+        return {
+            roundsToWin: step.combat.roundsToWin || 3,
+            maxRounds: step.combat.maxRounds || 5,
+            enemyStats: step.combat.enemyStats || { muscle: 3, smartz: 3 },
+            playerVariance: step.combat.playerVariance || 1.6,
+            enemyVariance: step.combat.enemyVariance || 1.6,
+            roundWinXp: step.combat.roundWinXp || 4,
+            roundLossEffects: step.combat.roundLossEffects || [
+                { type: 'hull', amount: -4, overlayImage: 'explosion-small.png', overlayDurationMs: 1400 },
+                { type: 'personnel', amount: -5 }
+            ],
+            roundDelay: step.combat.roundDelay || 1600,
+            introText: step.combat.introText || 'Best of five. Pick the chair you trust with your life and the paperwork.',
+            selectionHint: step.combat.selectionHint || 'Click an occupied bridge chair to choose the round.',
+            enemyLabel: step.combat.enemyLabel || step.object?.label || 'Enemy'
+        };
+    }
+
+    function getChairCombatStats(officer, role, step) {
+        const profile = chairCombatProfiles[role] || chairCombatProfiles.Captain;
+        const baseScore = Math.max(0.5, getEncounterScore(officer, role, step));
+        return {
+            muscle: Number((baseScore * profile.muscle).toFixed(1)),
+            smartz: Number((baseScore * profile.smartz).toFixed(1)),
+            style: profile.style
+        };
+    }
+
+    function awardOfficerEncounterExperience(officer, amount) {
+        if (!officer || amount <= 0) {
+            return [];
+        }
+
+        shipState.experience += amount;
+        const promotions = addOfficerExperience(officer, amount) || [];
+        if (promotions.length > 0) {
+            triggerPromotionBursts(officer, promotions);
+        }
+        return promotions;
+    }
+
+    function getCombatSelectionSlots() {
+        return slots.filter(slot => slot.occupied && slot.officer);
+    }
+
+    function isCombatRoleStunned(state, role) {
+        return Boolean(state?.stunnedUntilRound?.[role] === state?.roundNumber);
+    }
+
+    function renderCombatChoiceButtons(state) {
         interactionChoices.innerHTML = '';
     }
 
-    function showInteractionPanel(title, text) {
-        interactionTitle.textContent = title || 'Bridge Response Needed';
-        interactionText.textContent = text || '';
-        interactionPanel.classList.remove('hidden');
-        interactionPanel.classList.add('visible');
+	    function renderEncounterSelectionPanel(step) {
+	        const combatConfig = getEncounterCombatConfig(step);
+	        const enemyStats = combatConfig?.enemyStats || { muscle: 0, smartz: 0 };
+	        const introMarkup = combatConfig
+	            ? `
+                    <div class="encounter-flow">
+                        <section class="encounter-side-card">
+                            <span class="encounter-side-label">Scrumble</span>
+                            <span class="encounter-side-line">Choose your bridge member.</span>
+                            <span class="encounter-side-line">${combatConfig.selectionHint}</span>
+                            <span class="encounter-side-line">Switch chairs each round if you need to.</span>
+                        </section>
+                        <section class="encounter-center-card">
+                            <span class="encounter-battle-label">${step.title || 'Bridge Response Needed'}</span>
+                            <div class="encounter-round-label">Round 1 of ${combatConfig.maxRounds}</div>
+                            <div class="encounter-scoreboard">
+                                <div class="encounter-score-block">
+                                    <span class="encounter-score-name">Scrumble</span>
+                                    <strong>0</strong>
+                                </div>
+                                <div class="encounter-score-block">
+                                    <span class="encounter-score-name">Incoming</span>
+                                    <span class="encounter-score-meta">${combatConfig.introText}</span>
+                                </div>
+                                <div class="encounter-score-block enemy">
+                                    <span class="encounter-score-name">${combatConfig.enemyLabel}</span>
+                                    <strong>0</strong>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="encounter-side-card enemy">
+                            <span class="encounter-side-label">${combatConfig.enemyLabel}</span>
+                            <span class="encounter-side-line">Muscle ${enemyStats.muscle.toFixed(1)}</span>
+                            <span class="encounter-side-line">Smartz ${enemyStats.smartz.toFixed(1)}</span>
+                            <span class="encounter-side-line">They are spoiling for trouble.</span>
+                        </section>
+                    </div>
+	            `
+	            : step.text;
+
+	        showInteractionPanel(step.title || 'Bridge Response Needed', introMarkup, {
+	            allowHtml: true,
+	            footer: combatConfig?.selectionHint || 'Click an occupied bridge chair to respond.',
+                className: combatConfig ? 'encounter-panel' : ''
+	        });
+
+        interactionChoices.innerHTML = '';
+    }
+
+	    function buildCombatLogMarkup(roundResults) {
+        if (!roundResults || roundResults.length === 0) {
+            return '<div class="combat-log-entry">No rounds played yet. Choose a chair and make this awkward.</div>';
+        }
+
+        return roundResults
+            .slice()
+            .reverse()
+            .map(result => `
+                <div class="combat-log-entry ${result.playerWon ? 'win' : 'loss'}">
+                    <span class="combat-log-round">Round ${result.round} · Enemy played ${formatCombatStatLabel(result.enemyStat)}</span>
+                    ${result.summary}<br>${result.comment}
+                </div>
+            `)
+            .join('');
+    }
+
+    function renderCombatEncounterPanel(state) {
+        const playerStats = state.playerStats;
+        const enemyStats = state.combatConfig.enemyStats;
+        const finalBanner = state.finished
+            ? `<div class="combat-result-banner ${state.playerWonEncounter ? 'win' : 'loss'}">${state.playerWonEncounter ? 'Scrumble takes the set.' : `${state.combatConfig.enemyLabel} takes the set.`}</div>`
+            : '';
+        const currentRoundLabel = state.finished
+            ? `Final Score`
+            : `Round ${state.roundNumber} of ${state.combatConfig.maxRounds}`;
+
+        const markup = `
+            <div class="combat-layout">
+                <div class="combat-scoreboard">
+                    <div class="combat-score-card">
+                        <span class="combat-score-label">${state.officer.name}</span>
+                        <strong class="combat-score-value">${state.playerWins}</strong>
+                    </div>
+                    <div class="combat-round-pill">${currentRoundLabel}</div>
+                    <div class="combat-score-card enemy">
+                        <span class="combat-score-label">${state.combatConfig.enemyLabel}</span>
+                        <strong class="combat-score-value">${state.enemyWins}</strong>
+                    </div>
+                </div>
+                <div class="combat-stat-grid">
+                    <div class="combat-stat-card">
+                        <span>${state.role} Chair</span>
+                        <strong>${playerStats.muscle.toFixed(1)} Muscle / ${playerStats.smartz.toFixed(1)} Smartz</strong>
+                        <div class="combat-stat-meta">${state.officer.name} is here to ${playerStats.style.toLowerCase()}.</div>
+                    </div>
+                    <div class="combat-stat-card">
+                        <span>${state.combatConfig.enemyLabel}</span>
+                        <strong>${enemyStats.muscle.toFixed(1)} Muscle / ${enemyStats.smartz.toFixed(1)} Smartz</strong>
+                        <div class="combat-stat-meta">${state.latestEnemyTell || 'Enemy engines snarl while someone mutters over a hot console.'}</div>
+                    </div>
+                </div>
+                ${finalBanner}
+                <div class="combat-log">
+                    ${buildCombatLogMarkup(state.roundResults)}
+                </div>
+            </div>
+        `;
+
+        showInteractionPanel(state.step.title || 'Bridge Response Needed', markup, {
+            allowHtml: true,
+            footer: state.finished
+                ? 'Encounter complete. Wrapping up the scene...'
+                : 'The duel runs automatically after your chair choice. Enjoy the chaos.'
+        });
+        interactionChoices.innerHTML = '';
     }
 
     function hideSpeechBubble() {
@@ -518,9 +800,13 @@ document.addEventListener('DOMContentLoaded', function() {
         speechBubble.classList.add('visible');
     }
 
-    function showOfficerDialogue(officer, text) {
+    function showOfficerDialogue(officer, text, options = {}) {
         hideNarration();
         showSpeechBubble(officer, text);
+        if (options.responseSound) {
+            playOfficerResponseSound(options.responseSound);
+            return;
+        }
         playOfficerVoice(officer);
     }
 
@@ -673,7 +959,179 @@ document.addEventListener('DOMContentLoaded', function() {
         return baseEffectiveness + roleLean;
     }
 
+    function chooseEnemyCombatStat(combatConfig) {
+        const muscle = Math.max(combatConfig.enemyStats.muscle || 0, 0.1);
+        const smartz = Math.max(combatConfig.enemyStats.smartz || 0, 0.1);
+        const total = muscle + smartz;
+        return Math.random() * total < muscle ? 'muscle' : 'smartz';
+    }
+
+    function getCombatRoundComment(role, enemyStat, playerWon) {
+        const resultText = playerWon ? 'We take that round.' : 'That round hurt more than it looked.';
+        const roleCommentary = {
+            Science: {
+                muscle: playerWon ? 'Their big move was scientifically embarrassing.' : 'Brute force remains annoyingly peer-reviewed.',
+                smartz: playerWon ? 'Outsmarted them. Delightful.' : 'They weaponised nonsense. Respectfully rude.'
+            },
+            Helm: {
+                muscle: playerWon ? 'Too slow. We danced past that swing.' : 'They hit harder than they steer.',
+                smartz: playerWon ? 'Read their feint and cut inside it.' : 'They baited the lane. Clever little pests.'
+            },
+            Captain: {
+                muscle: playerWon ? 'Presence and timing. Classic bridge work.' : 'They forced the issue and won the tempo.',
+                smartz: playerWon ? 'Command judgment remains undefeated.' : 'They anticipated us. I dislike being anticipated.'
+            },
+            Tactical: {
+                muscle: playerWon ? 'Direct force. Beautiful, honest violence.' : 'They punched back. Rude, but noted.',
+                smartz: playerWon ? 'Cleverness used responsibly for once.' : 'Trick shots. Cowardly, effective trick shots.'
+            },
+            Engineering: {
+                muscle: playerWon ? 'Held together under pressure. As designed.' : 'That impact exceeded my emotional tolerances.',
+                smartz: playerWon ? 'Their systems trick failed. Love that for us.' : 'They cheated with better wiring.'
+            }
+        };
+        return `${roleCommentary[role]?.[enemyStat] || resultText} ${resultText}`;
+    }
+
+    function buildCombatRoundSummary(result) {
+        const playerLabel = `${result.officerName} ${result.playerWon ? 'wins' : 'loses'} by ${Math.abs(result.margin).toFixed(1)}`;
+        return `${playerLabel}. ${formatCombatStatLabel(result.enemyStat)}: ${result.playerTotal.toFixed(1)} vs ${result.enemyTotal.toFixed(1)}.`;
+    }
+
+    function finishCombatEncounter(state) {
+        const responses = state.step.responses?.[state.role] || {};
+        const endSound = state.playerWonEncounter ? state.step.soundEndSuccess : state.step.soundEndFailure;
+        state.inProgress = false;
+
+        activeEncounterStep = null;
+        setEpisodeMode('scripted');
+
+        if (endSound) {
+            playEpisodeSound(`assets/sound/${endSound}`);
+        }
+
+        applyEncounterEffects(state.playerWonEncounter ? state.step.outcomes?.success : state.step.outcomes?.failure);
+        renderCombatEncounterPanel(state);
+        showOfficerDialogue(
+            state.officer,
+            state.playerWonEncounter
+                ? (responses.success || 'Handled.')
+                : (responses.failure || 'That could have gone better.')
+        );
+
+        clearEpisodeTimeout();
+        episodeTimeoutId = setTimeout(() => {
+            hideInteractionPanel();
+            hideSpeechBubble();
+            clearActiveDestination();
+            runNextEpisodeStep();
+        }, state.step.aftermathDelay || 3200);
+    }
+
+    function playCombatRound() {
+        const state = activeCombatEncounter;
+        if (!state || state.finished) {
+            return;
+        }
+
+        const enemyStat = chooseEnemyCombatStat(state.combatConfig);
+        const playerBase = state.playerStats[enemyStat];
+        const enemyBase = state.combatConfig.enemyStats[enemyStat];
+        const playerRoll = Math.random() * state.combatConfig.playerVariance;
+        const enemyRoll = Math.random() * state.combatConfig.enemyVariance;
+        const playerTotal = playerBase + playerRoll;
+        const enemyTotal = enemyBase + enemyRoll;
+        const playerWon = playerTotal >= enemyTotal;
+        const margin = playerTotal - enemyTotal;
+
+        if (playerWon) {
+            state.playerWins += 1;
+            awardOfficerEncounterExperience(state.officer, state.combatConfig.roundWinXp);
+        } else {
+            state.enemyWins += 1;
+            applyEncounterEffects(state.combatConfig.roundLossEffects);
+        }
+
+        state.latestEnemyTell = `${state.combatConfig.enemyLabel} leans into ${formatCombatStatLabel(enemyStat)} this round.`;
+
+        const roundResult = {
+            round: state.roundNumber,
+            enemyStat,
+            playerWon,
+            margin,
+            playerTotal,
+            enemyTotal,
+            officerName: state.officer.name,
+            summary: buildCombatRoundSummary({
+                officerName: state.officer.name,
+                playerWon,
+                margin,
+                enemyStat,
+                playerTotal,
+                enemyTotal
+            }),
+            comment: getCombatRoundComment(state.role, enemyStat, playerWon)
+        };
+
+        state.roundResults.push(roundResult);
+        showSpeechBubble(state.officer, roundResult.comment);
+
+        const wonEncounter = state.playerWins >= state.combatConfig.roundsToWin;
+        const lostEncounter = state.enemyWins >= state.combatConfig.roundsToWin;
+        const outOfRounds = state.roundNumber >= state.combatConfig.maxRounds;
+
+        if (wonEncounter || lostEncounter || outOfRounds) {
+            state.finished = true;
+            state.playerWonEncounter = state.playerWins > state.enemyWins;
+            renderCombatEncounterPanel(state);
+            finishCombatEncounter(state);
+            return;
+        }
+
+        state.roundNumber += 1;
+        renderCombatEncounterPanel(state);
+        clearEpisodeTimeout();
+        episodeTimeoutId = setTimeout(playCombatRound, state.combatConfig.roundDelay);
+    }
+
+    function startCombatEncounter(step, slot) {
+        const officer = slot.officer;
+        const responses = step.responses?.[slot.role] || {};
+        const combatConfig = getEncounterCombatConfig(step);
+        activeCombatEncounter = {
+            step,
+            slot,
+            officer,
+            role: slot.role,
+            combatConfig,
+            playerStats: getChairCombatStats(officer, slot.role, step),
+            playerWins: 0,
+            enemyWins: 0,
+            roundNumber: 1,
+            roundResults: [],
+            latestEnemyTell: `${combatConfig.enemyLabel} is scanning for weakness.`,
+            finished: false,
+            inProgress: true,
+            playerWonEncounter: false
+        };
+
+        setEpisodeMode('interaction');
+        showOfficerDialogue(officer, responses.attempt || `${slot.role} responding.`);
+        renderCombatEncounterPanel(activeCombatEncounter);
+        clearEpisodeTimeout();
+        episodeTimeoutId = setTimeout(playCombatRound, step.resultDelay || 1300);
+    }
+
     function resolveEncounterChoice(step, slot) {
+        if (activeCombatEncounter?.inProgress) {
+            return;
+        }
+
+        if (step.combat) {
+            startCombatEncounter(step, slot);
+            return;
+        }
+
         const officer = slot.officer;
         const responses = step.responses?.[slot.role] || {};
         const success = getEncounterScore(officer, slot.role, step) >= (step.successTarget || 0);
@@ -706,8 +1164,359 @@ document.addEventListener('DOMContentLoaded', function() {
         }, step.resultDelay || 2400);
     }
 
+    function buildCombatLogMarkup(roundResults) {
+        if (!roundResults || roundResults.length === 0) {
+            return '<div class="combat-log-entry">No rounds played yet. Choose a chair and make this awkward.</div>';
+        }
+
+        return roundResults
+            .slice()
+            .reverse()
+            .map(result => `
+                <div class="combat-log-entry ${result.playerWon ? 'win' : 'loss'}">
+                    <span class="combat-log-round">Round ${result.round} - Enemy played ${formatCombatStatLabel(result.enemyStat)}</span>
+                    ${result.summary}<br>${result.comment}
+                </div>
+            `)
+            .join('');
+    }
+
+	    function renderCombatEncounterPanel(state) {
+	        const enemyStats = state.combatConfig.enemyStats;
+	        const latestRound = state.roundResults[state.roundResults.length - 1] || null;
+            const showLatestResult = state.awaitingRoundDismissal || state.finished;
+            const latestPlayerLost = latestRound ? !latestRound.playerWon : false;
+            const losingSide = state.finished
+                ? (state.playerWonEncounter ? 'enemy' : 'player')
+                : (showLatestResult && latestRound ? (latestPlayerLost ? 'player' : 'enemy') : '');
+            const playerCardClasses = [
+                'encounter-side-card',
+                losingSide === 'player' ? 'is-loser' : '',
+                state.selectedSlot && isCombatRoleStunned(state, state.selectedSlot.role) ? 'is-injured' : ''
+            ].filter(Boolean).join(' ');
+            const enemyCardClasses = [
+                'encounter-side-card',
+                'enemy',
+                losingSide === 'enemy' ? 'is-loser' : ''
+            ].filter(Boolean).join(' ');
+            const currentRoundLabel = state.finished
+                ? 'Final Score'
+                : `Round ${state.roundNumber} of ${state.combatConfig.maxRounds}`;
+            const playerRoleLabel = state.selectedSlot
+                ? `${state.selectedSlot.role} Chair`
+                : (latestRound ? `${latestRound.role} Chair` : 'Awaiting Orders');
+            const playerLines = showLatestResult && latestRound
+                ? [
+                    `${latestRound.officerName} chose ${playerRoleLabel}`,
+                    `Rolled ${latestRound.playerRoll.toFixed(1)}`,
+                    `Total ${latestRound.playerTotal.toFixed(1)}`
+                ]
+                : [
+                    playerRoleLabel,
+                    state.selectedSlot && state.playerStats
+                        ? `Muscle ${state.playerStats.muscle.toFixed(1)} / Smartz ${state.playerStats.smartz.toFixed(1)}`
+                        : 'Choose an occupied bridge member',
+                    state.inProgress ? 'Round resolving now.' : 'Crew dialogue stays front and centre.'
+                ];
+            const enemyLines = showLatestResult && latestRound
+                ? [
+                    `${state.combatConfig.enemyLabel} chose ${formatCombatStatLabel(latestRound.enemyStat)}`,
+                    `Rolled ${latestRound.enemyRoll.toFixed(1)}`,
+                    `Total ${latestRound.enemyTotal.toFixed(1)}`
+                ]
+                : [
+                    `${state.combatConfig.enemyLabel} is waiting`,
+                    `Muscle ${enemyStats.muscle.toFixed(1)}`,
+                    `Smartz ${enemyStats.smartz.toFixed(1)}`
+                ];
+            const overlayMessage = state.finished
+                ? (state.playerWonEncounter ? 'Scrumble wins the encounter!' : `${state.combatConfig.enemyLabel} wins the encounter!`)
+                : (showLatestResult && latestRound
+                    ? (latestRound.playerWon ? 'Scrumble wins this round!' : 'Enemy wins this round!')
+                    : '');
+            const overlayClasses = [
+                'encounter-result-overlay',
+                losingSide || 'enemy',
+                state.finished && state.playerWonEncounter ? 'win' : ''
+            ].filter(Boolean).join(' ');
+            const swearMarkup = losingSide
+                ? `<img class="encounter-swear ${losingSide}" src="assets/images/swear.png" alt="">`
+                : '';
+            const continueMarkup = state.awaitingRoundDismissal && !state.finished
+                ? `
+                    <div class="combat-actions">
+                        <button id="combat-continue-button" class="overlay-next-button" type="button">Next Round</button>
+                    </div>
+                `
+                : '';
+	        const markup = `
+                <div class="encounter-flow">
+                    <section class="${playerCardClasses}">
+                        <span class="encounter-side-label">Scrumble</span>
+                        ${playerLines.map(line => `<span class="encounter-side-line">${line}</span>`).join('')}
+                    </section>
+                    <section class="encounter-center-card">
+                        <span class="encounter-battle-label">${state.step.title || 'Bridge Response Needed'}</span>
+                        <div class="encounter-round-label">${currentRoundLabel}</div>
+                        <div class="encounter-scoreboard">
+                            <div class="encounter-score-block">
+                                <span class="encounter-score-name">Scrumble</span>
+                                <strong>${state.playerWins}</strong>
+                            </div>
+                            <div class="encounter-score-block">
+                                <span class="encounter-score-name">${latestRound ? `Round ${latestRound.round}` : 'Status'}</span>
+                                <span class="encounter-score-meta">${state.latestEnemyTell || 'Enemy engines snarl while someone mutters over a hot console.'}</span>
+                            </div>
+                            <div class="encounter-score-block enemy">
+                                <span class="encounter-score-name">${state.combatConfig.enemyLabel}</span>
+                                <strong>${state.enemyWins}</strong>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="${enemyCardClasses}">
+                        <span class="encounter-side-label">${state.combatConfig.enemyLabel}</span>
+                        ${enemyLines.map(line => `<span class="encounter-side-line">${line}</span>`).join('')}
+                    </section>
+                    ${overlayMessage ? `<div class="${overlayClasses}">${overlayMessage}</div>` : ''}
+                    ${swearMarkup}
+                </div>
+                ${showLatestResult && latestRound ? `<div class="combat-log-entry ${latestRound.playerWon ? 'win' : 'loss'}"><span class="combat-log-round">Round ${latestRound.round} - Enemy played ${formatCombatStatLabel(latestRound.enemyStat)}</span>${latestRound.summary}<br>${latestRound.comment}</div>` : ''}
+                ${continueMarkup}
+	        `;
+
+	        showInteractionPanel(state.step.title || 'Bridge Response Needed', markup, {
+	            allowHtml: true,
+	            footer: state.finished
+	                ? 'Encounter complete. Wrapping up the scene...'
+                : (state.inProgress
+                    ? 'Round resolving...'
+                    : (state.awaitingRoundDismissal
+                        ? 'Review the round result, then continue.'
+	                        : 'Click an occupied bridge chair to choose this round.')),
+                className: 'encounter-panel'
+	        });
+	        renderCombatChoiceButtons(state);
+        const continueButton = interactionPanel.querySelector('#combat-continue-button');
+        if (continueButton) {
+            continueButton.addEventListener('click', function() {
+                if (!activeCombatEncounter || activeCombatEncounter.finished) {
+                    return;
+                }
+
+                activeCombatEncounter.awaitingRoundDismissal = false;
+                activeCombatEncounter.roundNumber += 1;
+                activeCombatEncounter.selectedSlot = null;
+                activeCombatEncounter.selectedOfficer = null;
+                activeCombatEncounter.playerStats = null;
+                renderCombatEncounterPanel(activeCombatEncounter);
+            });
+        }
+    }
+
+    function finishCombatEncounter(state) {
+        const responses = state.step.responses?.[state.lastRole] || {};
+        const endSound = state.playerWonEncounter ? state.step.soundEndSuccess : state.step.soundEndFailure;
+        const responseSound = getEncounterResponseClipPath(state.lastRole, responses);
+        state.inProgress = false;
+        activeEncounterStep = null;
+        setEpisodeMode('scripted');
+
+        if (endSound) {
+            playEpisodeSound(`assets/sound/${endSound}`);
+        }
+
+        applyEncounterEffects(state.playerWonEncounter ? state.step.outcomes?.success : state.step.outcomes?.failure);
+        renderCombatEncounterPanel(state);
+        if (state.selectedOfficer) {
+            showOfficerDialogue(
+                state.selectedOfficer,
+                state.playerWonEncounter
+                    ? (responses.success || 'Handled.')
+                    : (responses.failure || 'That could have gone better.'),
+                { responseSound }
+            );
+        }
+
+        clearEpisodeTimeout();
+        episodeTimeoutId = setTimeout(() => {
+            hideInteractionPanel();
+            hideSpeechBubble();
+            clearActiveDestination();
+            runNextEpisodeStep();
+        }, state.step.aftermathDelay || 3200);
+    }
+
+    function playCombatRound() {
+        const state = activeCombatEncounter;
+        if (!state || state.finished || !state.selectedSlot || state.awaitingRoundDismissal) {
+            return;
+        }
+
+        state.inProgress = true;
+        const enemyStat = chooseEnemyCombatStat(state.combatConfig);
+        const playerBase = state.playerStats[enemyStat];
+        const enemyBase = state.combatConfig.enemyStats[enemyStat];
+	        const playerRoll = Math.random() * state.combatConfig.playerVariance;
+	        const enemyRoll = Math.random() * state.combatConfig.enemyVariance;
+	        const playerTotal = playerBase + playerRoll;
+        const enemyTotal = enemyBase + enemyRoll;
+        const playerWon = playerTotal >= enemyTotal;
+        const margin = playerTotal - enemyTotal;
+
+        if (playerWon) {
+            state.playerWins += 1;
+            awardOfficerEncounterExperience(state.selectedOfficer, state.combatConfig.roundWinXp);
+        } else {
+            state.enemyWins += 1;
+            applyEncounterEffects(state.combatConfig.roundLossEffects);
+            if (state.combatConfig.stunOnLoss !== false) {
+                state.stunnedUntilRound[state.lastRole] = state.roundNumber + 1;
+            }
+        }
+
+        state.latestEnemyTell = `${state.combatConfig.enemyLabel} leans into ${formatCombatStatLabel(enemyStat)} this round.`;
+	        const roundResult = {
+	            round: state.roundNumber,
+                role: state.lastRole,
+	            enemyStat,
+	            playerWon,
+	            margin,
+                playerBase,
+                enemyBase,
+                playerRoll,
+                enemyRoll,
+	            playerTotal,
+	            enemyTotal,
+	            officerName: state.selectedOfficer.name,
+            summary: buildCombatRoundSummary({
+                officerName: state.selectedOfficer.name,
+                playerWon,
+                margin,
+                enemyStat,
+                playerTotal,
+                enemyTotal
+            }),
+            comment: getCombatRoundComment(state.lastRole, enemyStat, playerWon)
+        };
+
+        state.roundResults.push(roundResult);
+        showOfficerDialogue(state.selectedOfficer, roundResult.comment, {
+            responseSound: getEncounterResponseClipPath(state.lastRole)
+        });
+
+        const wonEncounter = state.playerWins >= state.combatConfig.roundsToWin;
+        const lostEncounter = state.enemyWins >= state.combatConfig.roundsToWin;
+        const outOfRounds = state.roundNumber >= state.combatConfig.maxRounds;
+
+        if (wonEncounter || lostEncounter || outOfRounds) {
+            state.finished = true;
+            state.playerWonEncounter = state.playerWins > state.enemyWins;
+            renderCombatEncounterPanel(state);
+            finishCombatEncounter(state);
+            return;
+        }
+
+        state.awaitingRoundDismissal = true;
+        state.selectedSlot = null;
+        state.selectedOfficer = null;
+        state.playerStats = null;
+        state.inProgress = false;
+        renderCombatEncounterPanel(state);
+    }
+
+	    function startCombatEncounter(step, slot) {
+        if (!activeCombatEncounter || activeCombatEncounter.step !== step) {
+            const combatConfig = getEncounterCombatConfig(step);
+            activeCombatEncounter = {
+                step,
+                combatConfig,
+                playerWins: 0,
+                enemyWins: 0,
+                roundNumber: 1,
+                roundResults: [],
+                latestEnemyTell: `${combatConfig.enemyLabel} is scanning for weakness.`,
+                finished: false,
+                inProgress: false,
+                awaitingRoundDismissal: false,
+                playerWonEncounter: false,
+                selectedSlot: null,
+                selectedOfficer: null,
+                playerStats: null,
+                lastRole: null,
+                stunnedUntilRound: {}
+            };
+        }
+
+        const state = activeCombatEncounter;
+        if (isCombatRoleStunned(state, slot.role)) {
+            return;
+        }
+
+	        state.selectedSlot = slot;
+	        state.selectedOfficer = slot.officer;
+	        state.lastRole = slot.role;
+	        state.playerStats = getChairCombatStats(slot.officer, slot.role, step);
+        state.latestEnemyTell = `${state.combatConfig.enemyLabel} waits to reveal whether this round is Muscle or Smartz.`;
+
+        setEpisodeMode('interaction');
+        const responses = step.responses?.[slot.role] || {};
+        showOfficerDialogue(slot.officer, responses.attempt || `${slot.role} responding.`, {
+            responseSound: getEncounterResponseClipPath(slot.role, responses)
+        });
+	        renderCombatEncounterPanel(state);
+	        clearEpisodeTimeout();
+	        episodeTimeoutId = setTimeout(playCombatRound, step.resultDelay || 900);
+	    }
+
+    function resolveEncounterChoice(step, slot) {
+        if (activeCombatEncounter?.inProgress || activeCombatEncounter?.awaitingRoundDismissal) {
+            return;
+        }
+
+        if (step.combat) {
+            startCombatEncounter(step, slot);
+            return;
+        }
+
+        const officer = slot.officer;
+        const responses = step.responses?.[slot.role] || {};
+        const responseSound = getEncounterResponseClipPath(slot.role, responses);
+        const success = getEncounterScore(officer, slot.role, step) >= (step.successTarget || 0);
+        const endSound = success ? step.soundEndSuccess : step.soundEndFailure;
+
+        activeEncounterStep = null;
+        hideInteractionPanel();
+        setEpisodeMode('scripted');
+        showOfficerDialogue(officer, responses.attempt || `${slot.role} responding.`, {
+            responseSound
+        });
+
+        clearEpisodeTimeout();
+        episodeTimeoutId = setTimeout(() => {
+            if (endSound) {
+                playEpisodeSound(`assets/sound/${endSound}`);
+            }
+            applyEncounterEffects(success ? step.outcomes?.success : step.outcomes?.failure);
+            showOfficerDialogue(
+                officer,
+                success
+                    ? (responses.success || 'Handled.')
+                    : (responses.failure || 'That could have gone better.'),
+                { responseSound }
+            );
+
+            clearEpisodeTimeout();
+            episodeTimeoutId = setTimeout(() => {
+                hideSpeechBubble();
+                clearActiveDestination();
+                runNextEpisodeStep();
+            }, step.aftermathDelay || 2800);
+        }, step.resultDelay || 2400);
+    }
+
     function startEncounter(step) {
         activeEncounterStep = step;
+        activeCombatEncounter = null;
         hideEpisodeTitle();
         hideSpeechBubble();
         hideNarration();
@@ -717,7 +1526,7 @@ document.addEventListener('DOMContentLoaded', function() {
         setActiveDestination(step.object, step.duration || 9000);
         setEpisodeMode('interaction');
         hoveredEncounterSlot = null;
-        hideInteractionPanel();
+        renderEncounterSelectionPanel(step);
     }
 
     function addOfficerExperience(officer, amount) {
@@ -802,6 +1611,11 @@ document.addEventListener('DOMContentLoaded', function() {
     function scheduleNextEpisodeStep(delayMs) {
         clearEpisodeTimeout();
         episodeTimeoutId = setTimeout(runNextEpisodeStep, delayMs);
+    }
+
+    function shouldNarrationWaitForNextButton() {
+        const nextStep = activeEpisode?.steps?.[episodeStepIndex];
+        return nextStep?.type !== 'waitForStations';
     }
 
     function finishEpisode() {
@@ -894,8 +1708,18 @@ document.addEventListener('DOMContentLoaded', function() {
             hideEpisodeTitle();
             hideSpeechBubble();
             hideInteractionPanel();
-            showNarration(step.speaker || 'Narrator', step.text);
-            scheduleNextEpisodeStep(step.duration);
+            clearEpisodeTimeout();
+            showNarration(step.speaker || 'Narrator', step.text, {
+                showNextButton: shouldNarrationWaitForNextButton()
+            });
+            if (isAwaitingNarrationAdvance) {
+                return;
+            }
+            if (step.duration > 0) {
+                scheduleNextEpisodeStep(step.duration);
+            } else {
+                runNextEpisodeStep();
+            }
             return;
         }
 
@@ -1052,9 +1876,9 @@ document.addEventListener('DOMContentLoaded', function() {
         const scienceSupport = shipStats.science;
         const engineeringSupport = shipStats.engineering;
 
-        shipState.hull = clampShipStat(shipState.hull + deltaSeconds * (0.08 + engineeringSupport * 0.02));
-        shipState.power = clampShipStat(shipState.power + deltaSeconds * (0.06 + engineeringSupport * 0.025 + scienceSupport * 0.01));
-        shipState.personnel = clampShipStat(shipState.personnel + deltaSeconds * (0.03 + scienceSupport * 0.018 + engineeringSupport * 0.008));
+        shipState.hull = clampShipStatValue(shipState.hull + deltaSeconds * (0.08 + engineeringSupport * 0.02));
+        shipState.power = clampShipStatValue(shipState.power + deltaSeconds * (0.06 + engineeringSupport * 0.025 + scienceSupport * 0.01));
+        shipState.personnel = clampShipStatValue(shipState.personnel + deltaSeconds * (0.03 + scienceSupport * 0.018 + engineeringSupport * 0.008));
 
         officers.forEach(officer => {
             if (!officer) {
@@ -1097,7 +1921,7 @@ document.addEventListener('DOMContentLoaded', function() {
         return promotionRankOrder[currentIndex + 1];
     }
 
-    function clampShipStat(value) {
+    function clampShipStatValue(value) {
         return Math.max(0, Math.min(maxShipStatValue, value));
     }
 
@@ -1353,7 +2177,7 @@ document.addEventListener('DOMContentLoaded', function() {
 	    }
 
 	    function drawDestination() {
-	        if (!activeDestination || !destinationImage.complete || episodeMode === 'outro') {
+	        if (!activeDestination || !destinationImage.complete || !destinationImage.naturalWidth || episodeMode === 'outro') {
 	            return;
 	        }
 
@@ -1375,8 +2199,8 @@ document.addEventListener('DOMContentLoaded', function() {
 	    }
 
     function drawDeckBackground() {
-        const mgmtTop = canvas.height / 3;
-        const mgmtHeight = canvas.height * 2 / 3;
+        const mgmtTop = canvas.height * managementAreaTopRatio;
+        const mgmtHeight = canvas.height - mgmtTop;
         const deckX = canvas.width * 0.25;
         const deckWidth = canvas.width * 0.5;
         if (deckImage.complete) {
@@ -1387,7 +2211,11 @@ document.addEventListener('DOMContentLoaded', function() {
     function drawSlots() {
         slots.forEach(slot => {
             ctx.save();
-            const isEncounterSelectable = episodeMode === 'interaction' && activeEncounterStep && slot.occupied && slot.officer;
+	            const isEncounterSelectable = episodeMode === 'interaction'
+                    && activeEncounterStep
+                    && slot.occupied
+                    && slot.officer
+                    && (!activeCombatEncounter || (!activeCombatEncounter.inProgress && !activeCombatEncounter.awaitingRoundDismissal && !activeCombatEncounter.finished && !isCombatRoleStunned(activeCombatEncounter, slot.role)));
             const isEncounterHovered = hoveredEncounterSlot === slot;
             ctx.strokeStyle = isEncounterSelectable ? (isEncounterHovered ? '#ffe27a' : '#8ad7ff') : (slot.occupied ? '#0f0' : '#fff');
             ctx.lineWidth = isEncounterSelectable ? (isEncounterHovered ? 5 : 4) : 3;
@@ -1407,15 +2235,24 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    function drawEncounterPrompt() {
-        if (episodeMode !== 'interaction' || !activeEncounterStep) {
-            return;
-        }
+	    function drawEncounterPrompt() {
+	        if (episodeMode !== 'interaction' || !activeEncounterStep) {
+	            return;
+	        }
 
-        const panelWidth = Math.min(540, canvas.width - 40);
+            const instructionText = activeCombatEncounter
+                ? (activeCombatEncounter.inProgress
+                    ? 'Round resolving now. Watch the panel for the blow-by-blow.'
+                    : (activeCombatEncounter.awaitingRoundDismissal
+                        ? 'Dismiss the round result, then choose the next chair.'
+                        : 'Choose a chair for this round by clicking an occupied bridge seat.'))
+                : (activeEncounterStep.combat
+                    ? 'Pick a chair by clicking an occupied bridge seat to start the best-of-five.'
+                    : 'Choose a bridge officer by clicking an occupied bridge seat to respond.');
+	        const panelWidth = Math.min(canvas.width * 0.9, canvas.width - 32);
         const panelHeight = 126;
         const panelX = canvas.width / 2 - panelWidth / 2;
-        const panelY = 44;
+        const panelY = Math.max(24, canvas.height * 0.24);
         const promptLines = wrapCenteredText(
             activeEncounterStep.text || 'Choose a bridge officer to respond.',
             panelWidth - 40,
@@ -1431,12 +2268,12 @@ document.addEventListener('DOMContentLoaded', function() {
         ctx.fill();
         ctx.stroke();
 
-        ctx.textAlign = 'center';
-        drawTextOutlined(activeEncounterStep.title || 'Bridge Response Needed', canvas.width / 2, panelY + 28, 'bold 18px Arial');
-        drawWrappedCenteredText(promptLines, canvas.width / 2, panelY + 54, 20, 'bold 15px Arial');
-        drawTextOutlined('Roll over a seated bridge officer and click to choose them.', canvas.width / 2, panelY + 106, 'bold 14px Arial');
-        ctx.restore();
-    }
+	        ctx.textAlign = 'center';
+	        drawTextOutlined(activeEncounterStep.title || 'Bridge Response Needed', canvas.width / 2, panelY + 28, 'bold 18px Arial');
+	        drawWrappedCenteredText(promptLines, canvas.width / 2, panelY + 54, 20, 'bold 15px Arial');
+	        drawTextOutlined(instructionText, canvas.width / 2, panelY + 106, 'bold 14px Arial');
+	        ctx.restore();
+	    }
 
     function drawPromotionBursts() {
         const now = performance.now();
@@ -1470,17 +2307,36 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    function drawOfficer(officer, drawX, drawY, width = officer.width, height = officer.height) {
-        const textY = drawY - layoutConfig.nameOffsetY;
-        const centerX = drawX + width / 2;
-        drawChevron(centerX, drawY - layoutConfig.chevronOffsetY, officer.rank);
-        drawOfficerHearts(officer, centerX, drawY);
-        ctx.textAlign = 'center';
-        drawTextOutlined(officer.name, centerX, textY);
-        drawTextOutlined(formatRoleLabel(officer.specialty), centerX, textY + layoutConfig.roleLabelOffsetY, 'bold 12px Arial');
-        ctx.textAlign = 'left';
-        ctx.drawImage(officer.img, drawX, drawY, width, height);
-    }
+	    function drawOfficer(officer, drawX, drawY, width = officer.width, height = officer.height) {
+            const slottedRole = slots.find(slot => slot.officer === officer)?.role || null;
+            const injuredForEncounter = Boolean(
+                slottedRole
+                && activeCombatEncounter
+                && !activeCombatEncounter.finished
+                && isCombatRoleStunned(activeCombatEncounter, slottedRole)
+            );
+	        const textY = drawY - layoutConfig.nameOffsetY;
+	        const centerX = drawX + width / 2;
+            ctx.save();
+            if (injuredForEncounter) {
+                ctx.globalAlpha = 0.42;
+            }
+	        drawChevron(centerX, drawY - layoutConfig.chevronOffsetY, officer.rank);
+	        drawOfficerHearts(officer, centerX, drawY);
+	        ctx.textAlign = 'center';
+	        drawTextOutlined(officer.name, centerX, textY);
+	        drawTextOutlined(formatRoleLabel(officer.specialty), centerX, textY + layoutConfig.roleLabelOffsetY, 'bold 12px Arial');
+	        ctx.textAlign = 'left';
+	        ctx.drawImage(officer.img, drawX, drawY, width, height);
+            if (injuredForEncounter) {
+                const injuryImage = getEffectImage('injury.png');
+                if (injuryImage?.complete) {
+                    ctx.globalAlpha = 0.96;
+                    ctx.drawImage(injuryImage, drawX + width * 0.62, drawY + height * 0.08, width * 0.34, width * 0.34);
+                }
+            }
+            ctx.restore();
+	    }
 
     function drawSideOfficers() {
         officers.forEach((officer, index) => {
@@ -1534,7 +2390,6 @@ document.addEventListener('DOMContentLoaded', function() {
 	            drawSideOfficers();
 	            drawSlotOfficers();
                 drawPromotionBursts();
-                drawEncounterPrompt();
 	        }
 
         if (activeSpeechOfficer) {
@@ -1766,9 +2621,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
         if (!dragging) {
             hoveredSideOfficerIndex = officers.findIndex(officer => officer && isPointInOfficer(x, y, officer));
-            hoveredEncounterSlot = episodeMode === 'interaction' && activeEncounterStep
-                ? (slots.find(slot => slot.occupied && slot.officer && isPointInOfficer(x, y, slot.officer)) || null)
-                : null;
+	            hoveredEncounterSlot = episodeMode === 'interaction' && activeEncounterStep
+	                ? (slots.find(slot =>
+                        slot.occupied
+                        && slot.officer
+                        && (!activeCombatEncounter || (!activeCombatEncounter.inProgress && !activeCombatEncounter.awaitingRoundDismissal && !activeCombatEncounter.finished && !isCombatRoleStunned(activeCombatEncounter, slot.role)))
+                        && isPointInOfficer(x, y, slot.officer)
+                    ) || null)
+	                : null;
         }
 
         if (dragging) {

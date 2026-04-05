@@ -66,6 +66,12 @@ const episodes = [
                     label: 'Galileo Restock Station'
                 }
             },
+                        {
+                type: 'narration',
+                speaker: 'Narrator',
+                text: 'The USS Scrumble docks safely. Supplies replenished. Laundry washed. Everything is quiet. For now.',
+                duration: 3200
+            },
             {
                 type: 'chairDialogue',
                 role: 'Science',
@@ -77,13 +83,8 @@ const episodes = [
                 role: 'Tactical',
                 text: 'I\'ll say. I didn\'t even get to shoot at anything.',
                 duration: 2800
-            },
-            {
-                type: 'narration',
-                speaker: 'Narrator',
-                text: 'The USS Scrumble docks safely. Supplies replenished. Laundry washed. Everything is quiet. For now.',
-                duration: 3200
             }
+
         ]
     },
 
@@ -563,12 +564,29 @@ const episodes = [
             type: 'encounter',
             title: 'Pirate Intercept',
             text: 'A squadron of pirates blocks your path. Their message is simple: leave or be removed. Who responds?',
-            soundStart: 'battle-start.mp3',
+            soundStart: 'battle-1.mp3',
             soundEndSuccess: 'success.mp3',
             soundEndFailure: 'failure.mp3',
             object: {
-                image: 'pirates.png',
+                image: 'enemy-warship.png',
                 label: 'Pirate Squadron'
+            },
+            combat: {
+                enemyLabel: 'Pirate Squadron',
+                introText: 'Combat exchange: best of five. Pick one bridge chair and let them talk, bluff, dodge, or hit their way through it.',
+                selectionHint: 'Choose your chair carefully. Each round the pirates play Muscle or Smartz.',
+                enemyStats: {
+                    muscle: 4.6,
+                    smartz: 3.7
+                },
+                playerVariance: 1.9,
+                enemyVariance: 1.7,
+                roundWinXp: 5,
+                roundLossEffects: [
+                    { type: 'hull', amount: -3, overlayImage: 'explosion-small.png', overlayDurationMs: 1500 },
+                    { type: 'personnel', amount: -4 }
+                ],
+                roundDelay: 1700
             },
             successTarget: 3.0,
             leaning: {
